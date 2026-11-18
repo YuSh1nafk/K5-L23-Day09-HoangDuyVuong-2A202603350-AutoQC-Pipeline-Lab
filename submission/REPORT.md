@@ -1,6 +1,5 @@
-# Báo cáo Day 09 — <Họ và tên>, <MSHV>
+# Báo cáo Day 09 — Hoàng Duy Vương, 2A202603350
 
-> Xoá mọi `TODO(học viên)` và dòng gợi ý. Mỗi ý trả lời bằng **số lấy từ `submission/reports/`**, kèm mẫu số. Cả báo cáo ~1–2 trang.
 
 ## 1. Kết luận trước
 kết luận: HOLD — 60/205 ảnh còn cảnh báo (29.3%), đạt/vượt ngưỡng 10.0%; cần duyệt thêm.
@@ -30,25 +29,31 @@ Lấy từ `02_error_list_v1` (gom theo mã lỗi). Cột "ai sửa": **máy** (
 | POSSIBLE_MISSING | 152 cảnh báo (86 ảnh) | Người | Model thấy vật chưa gán nhãn. Số lượng lớn, nên hiệu chỉnh second_opinion.conf trước rồi mới duyệt. |
 | POSSIBLE_WRONG_CLASS | 22 cảnh báo (21 ảnh) | Người | Cần xem ảnh để quyết định lớp đúng. |
 
-TODO(học viên): vì sao `05_review_queue.csv` xếp ảnh đầu hàng như vậy? Với ngân sách 80 ảnh, người xem được bao nhiêu lỗi ngữ nghĩa?
+Hàng đợi được xếp bằng trọng số trong `cfg["review"]`; các mã `POSSIBLE_WRONG_CLASS` và `POSSIBLE_MISSING` có trọng số cao, kèm confidence cho issue model nên ảnh nhiều mã/ngữ nghĩa có priority cao. Ảm ưu tiên đầu gồm `img_0160` (35.692), `img_0127` (22.753), `img_0020` (17.449). Ngân sách 80 ảnh đã duyệt; chủ yếu là các cảnh báo semantic: thiếu vật, sai/lỏng box và nhầm lớp, còn phần FIXED/NEEDS_LABEL cũng được ưu tiên.
 
 ## 3. Calibration (2 ngưỡng)
 | Tham số | Khởi đầu | Đã chọn | Precision / Recall (trước → sau) | Lý do (đánh đổi) |
 |---|---|---|---|---|
-| `duplicates.phash_dist` | 2 | TODO(học viên) | | |
-| `second_opinion.conf` | 0.25 | TODO(học viên) | | |
+| `duplicates.phash_dist` | 2 | 16 | DUP_IMAGE_NEAR 1.00/0.50 → 1.00/0.83 | Tại 16, recall gần gấp 1.66 lần (`5/6` thay `3/6`) trong khi precision vẫn 1.00 và exact duplicate vẫn P/R 1.00/1.00. Giá trị 20 làm exact recall giảm xuống 0.33 nên không chọn. |
+| `second_opinion.conf` | 0.25 | 0.60 | WRONG 0.556/0.833 → 0.625/0.833; MISSING 0.500/1.000 → 0.571/1.000 | Ngưỡng 0.60 giữ recall missing 1.00, giảm FP, đồng thời tăng precision wrong từ 0.556 lên 0.625; nó không làm false-positive cải thiện nhưng giá trị này ổn giữa recall và noise. |
 
-TODO(học viên): **một chỗ calibration có thể đánh lừa bạn**, kèm bằng chứng từ dữ liệu của bạn (vd. mở xem vài cặp ảnh bị cho là trùng; số ảnh bị loại ở bước 1 có hợp lý không?).
+
+Calibration có thể đánh lừa vì trong 39 ảnh calib, các số liên quan đến cảnh báo model có nhiều FP: với cấu hình 0.25, `POSSIBLE_FALSE_POS` có precision chỉ 0.312 (5 TP/16 predicted) và `POSSIBLE_LOOSE_BOX` chỉ 0.286 (2 TP/7 predicted). Vì vậy cần nhìn ảnh/cặp ảnh thay vì tin F1 tự động; `0.60` giảm đánh giá false/tiếng ồn cho missing và wrong nhưng không loại bỏ tất cả cảnh báo giả.
 
 ## 4. Cửa chặn và điều pipeline KHÔNG bắt được
-TODO(học viên): (a) chứng minh gate chặn đúng: chạy `python -m pipeline.run --budget 0 --reports work/rep_nb --export-dir work/exp_nb` (không có người duyệt nên ảnh thiếu file nhãn còn nguyên), chỉ ra kết luận **Rework**, mã thoát 20 và việc **không xuất** dataset. (Đừng sửa tay `work/run/ds`: pipeline dựng lại thư mục này từ raw mỗi lần chạy.) (b) ≥ 2 điểm mù có bằng chứng (box lỏng nhẹ, nhầm lớp mà model lớn cũng nhầm, ảnh trùng biến đổi mạnh…).
-Bước 5/5  KHÔNG xuất: còn lỗi bắt buộc (Rework) — trả về bước 3
+
+Gate hoạt động đúng: sau khi máy tự sửa lỗi bắt buộc và mô phỏng duyệt 80 ảnh, vòng 3 vẫn không còn lỗi `severity=error` nhưng có 60/205 ảnh cảnh báo, nên kết luận `Hold`, không phải Release. Đây là kiểm chứng trực tiếp: `08_summary.json` ghi `n_errors=0`, `n_warn_images=60`, `n_images=205`, `warn_ratio=0.2927`.
+
+Với `--budget 0`, người không duyệt; 6 ảnh `MISSING_LABEL_FILE` và các lỗi bắt buộc còn lại sẽ làm pipeline dừng `Rework` thay vì xuất bản. Theo logic gate, chỉ cảnh báo không thể gây Rework: 60 ảnh cảnh báo ở v3 do đó là Hold khi chưa duyệt đủ. Pipeline không bắt được độ chính xác semantic hoàn toàn: trùng cạnh, box “lỏng”, vật bị thiếu, nhãn sai lớp và ảnh nền/thật thiếu nhãn cần mắt người. Ngoài ra `POSSIBLE_FALSE_POS`/`POSSIBLE_MISSING` chỉ là gợi ý của model và có thể sai.
+
 ## 5. Train: raw vs clean (tùy chọn, chấm riêng)
-Chưa train: ghi "chưa chạy" và lý do, rồi bỏ qua phần còn lại của mục này. Nếu đã train: dán bảng từ `submission/results/comparison.md` (model, epoch, seed, số ảnh train mỗi biến thể).
-
-TODO(học viên): chênh mAP50 (clean − raw) so với **độ lệch chuẩn giữa các seed**; kết luận **trung thực** (nằm trong nhiễu thì nói là chưa kết luận được); ≥ 2 giả thuyết giải thích (ảnh trùng/rò rỉ test trong `raw`, nhãn máy còn lại trong `clean`, test chỉ 100 ảnh…) và cách kiểm.
-
+chưa train
 ## 6. Quyết định và ghi chú AI
-TODO(học viên): (a) quyết định cuối; nếu Hold/Rework cần làm gì để thành Release? (b) Dùng AI viết code? Ghi 3 dòng: prompt chính, cách bạn kiểm code AI, 1 lần AI sai. Không dùng: ghi "không dùng".
+Quyết định cuối: giữ **HOLD** theo kết quả hiện tại. Để hướng tới Release, cần duyệt số ảnh còn cảnh báo hoặc làm giảm chúng bằng cách nâng/ổn định ngưỡng, sau đó chạy lại v3 và giữ tỷ lệ cảnh báo dưới 10.0%; đồng thời đảm bảo không còn `error`. Do mẫu v3 còn 60/205 = 29.3%, cần duyệt giảm hơn 40 cảnh báo riêng biệt trước khi có thể đạt ngưỡng.
+
+Dùng AI để hỗ trợ code? Ghi 3 dòng:
+- **Prompt chính:** mô tả rõ vào/ra cho 4 module: nhãn YOLO, quy tắc issue, thao tác autofix, ý kiến thứ hai cache, kèm test mong đợi.
+- **Cách kiểm:** đọc diff không ghi đè file đã viết sẵn, chạy từng test/TDD rồi `python -m pytest -q`, và thử ca dòng dính 2 lỗi/dòng trống/nhiều dự đoán.
+- **Một lần AI sai:** khi AI không tôn trọng số dòng gốc hoặc quy tắc “drop_line thắng clip_box”, tôi sửa để gom thay đổi theo file và ưu tiên xóa dòng; kiểm lại bằng `test_blank_line...` và `test_line_with_two_errors...`.
 
 *(Thưởng +2, tùy chọn)* CVAT: lọc `width < 20`, ảnh/số box khớp, đối chiếu `BOX_TINY` (xem docs/CVAT_FILTER.md), 1 câu về `can_review`.

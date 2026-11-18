@@ -2,7 +2,7 @@
   <img src="docs/assets/hero.png" alt="Day 09 Lab: pipeline kiểm nhãn tự động" width="100%">
 </p>
 
-# K5-L23-DAY09-2A202603350-AutoQCPipeline
+# Day 09 Lab — Hoàng Duy Vương : 2A202603350 - Hoàng Duy Vương
 
 <p align="center">
   <img alt="cá nhân" src="https://img.shields.io/badge/lab-cá%20nhân-0b1f3a">
