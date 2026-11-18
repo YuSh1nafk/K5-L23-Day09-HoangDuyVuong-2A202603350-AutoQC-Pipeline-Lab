@@ -1,39 +1,81 @@
-"""BƯỚC 2/4 — Sửa tự động những lỗi bắt buộc mà máy sửa được AN TOÀN.   ★★
+"""Sửa an toàn các lỗi bắt buộc trong bản sao dataset và ghi lại mọi thay đổi."""
+from collections import defaultdict
 
-Test:  pytest tests/test_autofix.py -q
+import yaml
 
-`fix(ds, issues, cfg) -> list[dict]`: duyệt `issues` (chỉ lỗi severity ERROR), sửa thẳng vào thư mục `ds`,
-và trả về danh sách thay đổi; mỗi phần tử có khoá: image, line, action, before, after
-(đây chính là file `03_fixes.csv` — bằng chứng pipeline đã làm gì, người có thể kiểm lại).
+from ..common import ERROR, parse_yolo_line
 
-| code lỗi                                       | cách sửa                                    | action           |
-|------------------------------------------------|---------------------------------------------|------------------|
-| BAD_FORMAT, BAD_CLASS_ID, BOX_ZERO, DUP_BOX    | xoá dòng đó khỏi file nhãn                  | "drop_line"      |
-| BOX_OUT_OF_IMAGE                               | cắt box về trong [0,1] (giữ nguyên lớp)     | "clip_box"       |
-| MISSING_LABEL_FILE                             | KHÔNG sửa file (máy không thể bịa nhãn): ghi 1 dòng fix, before="(không có file)", after="chuyển người gán" | "needs_label" |
-| BAD_CLASS_NAME                                 | ghi lại `names` trong data.yaml đúng `cfg["classes"]` | "rename_classes" |
-| DUP_IMAGE_*, LEAK_TEST, CORRUPT_IMAGE, BAD_SIZE| xoá ảnh + nhãn khỏi `ds`                    | "remove_image"   |
+_DROP_CODES = {"BAD_FORMAT", "BAD_CLASS_ID", "BOX_ZERO", "DUP_BOX"}
+_REMOVE_CODES = {"LEAK_TEST", "CORRUPT_IMAGE", "BAD_SIZE"}
 
-Bẫy cần nghĩ tới (có test cho từng cái)
-- Một file có NHIỀU dòng lỗi: số dòng trong `issues` là số dòng GỐC. Nếu xoá từng dòng một thì số dòng lệch.
-  Gom theo file, rồi ghi lại MỘT lần.
-- Sau khi cắt, box có thể không còn diện tích (nằm hẳn ngoài ảnh): lúc đó xoá dòng thay vì ghi box rỗng.
-- Một dòng có 2 lỗi (vd. BOX_OUT_OF_IMAGE + DUP_BOX): xoá dòng thắng, chỉ ghi 1 fix `drop_line`, không ghi thêm `clip_box`. Dòng trống ở giữa file vẫn đếm vào số dòng gốc.
-- Ảnh vừa bị xoá (DUP_IMAGE_*...) mà còn issue dòng của chính nó: bỏ qua êm, không được báo lỗi/chết.
-- Không động tới lỗi WARN (cảnh báo là việc của người). Không sửa file ở `data/raw/` — chỉ sửa `ds`.
-- Chạy lần 2 trên dữ liệu đã sửa phải không làm gì thêm (idempotent) — NGOẠI LỆ duy nhất: `needs_label` được ghi lại mỗi lần còn lỗi `MISSING_LABEL_FILE` (vì ảnh vẫn chưa có nhãn).
 
-- `needs_label` KHÔNG tạo file nhãn rỗng (rỗng = "ảnh nền", khác với "chưa gán"). `review_queue` sẽ đẩy ảnh này lên đầu hàng đợi cho người.
-
-Gợi ý: `yaml.safe_load / safe_dump`.
-"""
-from collections import defaultdict  # noqa: F401
-
-import yaml  # noqa: F401
-
-from ..common import ERROR, parse_yolo_line  # noqa: F401
+def _clip_line(text):
+    cls, x, y, w, h = parse_yolo_line(text)
+    left, top, right, bottom = x - w / 2, y - h / 2, x + w / 2, y + h / 2
+    left, top, right, bottom = max(0.0, left), max(0.0, top), min(1.0, right), min(1.0, bottom)
+    if right <= left or bottom <= top:
+        return None
+    vals = (cls, (left + right) / 2, (top + bottom) / 2, right - left, bottom - top)
+    return " ".join(format(value, ".10g") for value in vals)
 
 
 def fix(ds, issues, cfg):
-    # TODO
-    raise NotImplementedError("autofix chưa làm")
+    by_image = defaultdict(list)
+    for issue in issues:
+        if issue.severity == ERROR:
+            by_image[issue.image].append(issue)
+    fixes = []
+    removed = set()
+    for stem, found in by_image.items():
+        codes = {issue.code for issue in found}
+        if stem == "data.yaml" and "BAD_CLASS_NAME" in codes:
+            data = yaml.safe_load(ds.yaml_path.read_text(encoding="utf-8")) or {}
+            data["names"] = {i: name for i, name in enumerate(cfg["classes"])}
+            ds.yaml_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+            fixes.append({"image": stem, "line": "", "action": "rename_classes", "before": "names không đúng", "after": str(cfg["classes"])})
+            continue
+        if any(code.startswith("DUP_IMAGE_") or code in _REMOVE_CODES for code in codes):
+            image = ds.image_path(stem)
+            label = ds.label_path(stem)
+            if image is not None:
+                image.unlink(missing_ok=True)
+            label.unlink(missing_ok=True)
+            removed.add(stem)
+            fixes.append({"image": stem, "line": "", "action": "remove_image", "before": "ảnh và nhãn trong dataset", "after": "đã loại bỏ"})
+            continue
+        if "MISSING_LABEL_FILE" in codes:
+            fixes.append({"image": stem, "line": "", "action": "needs_label", "before": "(không có file)", "after": "chuyển người gán"})
+        path = ds.label_path(stem)
+        line_issues = {}
+        for issue in found:
+            if issue.line is not None and (issue.code in _DROP_CODES or issue.code == "BOX_OUT_OF_IMAGE"):
+                line_issues.setdefault(issue.line, set()).add(issue.code)
+        if not path.exists() or not line_issues:
+            continue
+        original = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        output = []
+        changes = []
+        for number, raw in enumerate(original, 1):
+            codes = line_issues.get(number, set())
+            before = raw.rstrip("\r\n")
+            if codes & _DROP_CODES:
+                changes.append({"image": stem, "line": number, "action": "drop_line", "before": before, "after": ""})
+                continue
+            if "BOX_OUT_OF_IMAGE" in codes:
+                try:
+                    after = _clip_line(before)
+                except (ValueError, OverflowError):
+                    after = None
+                if after is None:
+                    changes.append({"image": stem, "line": number, "action": "drop_line", "before": before, "after": ""})
+                    continue
+                ending = raw[len(before):]
+                output.append(after + ending)
+                if after != before:
+                    changes.append({"image": stem, "line": number, "action": "clip_box", "before": before, "after": after})
+            else:
+                output.append(raw)
+        if changes:
+            path.write_text("".join(output), encoding="utf-8")
+            fixes.extend(changes)
+    return fixes
